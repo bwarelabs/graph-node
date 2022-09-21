@@ -3,12 +3,7 @@ use graph::blockchain::block_stream::BlockStreamEvent;
 use graph::blockchain::substreams_block_stream::SubstreamsBlockStream;
 use graph::prelude::{info, tokio, DeploymentHash, Registry};
 use graph::tokio_stream::StreamExt;
-use graph::{
-    env::env_var,
-    firehose::FirehoseEndpoint,
-    log::logger,
-    substreams::{self},
-};
+use graph::{env::env_var, firehose::FirehoseEndpoint, log::logger, substreams};
 use graph_chain_substreams::mapper::Mapper;
 use graph_core::MetricsRegistry;
 use prost::Message;
@@ -80,7 +75,7 @@ async fn main() -> Result<(), Error> {
                     BlockStreamEvent::Revert(_, _) => {}
                     BlockStreamEvent::ProcessBlock(block_with_trigger, _) => {
                         let changes = block_with_trigger.block;
-                        for change in changes.entity_changes {
+                        for change in changes.changes.entity_changes {
                             info!(&logger, "----- Entity -----");
                             info!(
                                 &logger,
