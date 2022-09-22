@@ -171,7 +171,7 @@ impl blockchain::DataSource<Chain> for DataSource {
         })
     }
 
-    fn validate(&self) -> Vec<Error> {
+    fn validate(&self, config: Config) -> Vec<Error> {
         let mut errors = vec![];
 
         if !ETHEREUM_KINDS.contains(&self.kind.as_str()) {

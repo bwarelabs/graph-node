@@ -71,6 +71,7 @@ pub struct Config {
     pub stores: BTreeMap<String, Shard>,
     pub chains: ChainSection,
     pub deployment: Deployment,
+    pub aliases: AliasesSection,
 }
 
 fn validate_name(s: &str) -> Result<()> {
@@ -186,6 +187,7 @@ impl Config {
             stores,
             chains,
             deployment,
+            aliases: AliasesSection::default(),
         })
     }
 
@@ -387,6 +389,12 @@ impl Replica {
         self.pool_size.validate(is_primary, &self.connection)?;
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AliasesSection {
+    #[serde(flatten, default)]
+    pub aliases: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
