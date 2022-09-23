@@ -12,7 +12,8 @@ use graph::{
             FirehoseMapper as FirehoseMapperTrait, TriggersAdapter as TriggersAdapterTrait,
         },
         firehose_block_stream::FirehoseBlockStream,
-        BlockHash, BlockPtr, Blockchain, IngestorError, RuntimeAdapter as RuntimeAdapterTrait,
+        BlockHash, BlockPtr, Blockchain, EmptyNodeCapabilities, IngestorError,
+        RuntimeAdapter as RuntimeAdapterTrait,
     },
     components::store::DeploymentLocator,
     firehose::{self as firehose, ForkStep},
@@ -22,7 +23,6 @@ use prost::Message;
 use std::sync::Arc;
 
 use crate::adapter::TriggerFilter;
-use crate::capabilities::NodeCapabilities;
 use crate::data_source::{DataSourceTemplate, UnresolvedDataSourceTemplate};
 use crate::runtime::RuntimeAdapter;
 use crate::trigger::{self, NearTrigger};
@@ -47,7 +47,11 @@ impl BlockStreamBuilder<Chain> for NearStreamBuilder {
         unified_api_version: UnifiedMappingApiVersion,
     ) -> Result<Box<dyn BlockStream<Chain>>> {
         let adapter = chain
-            .triggers_adapter(&deployment, &NodeCapabilities {}, unified_api_version)
+            .triggers_adapter(
+                &deployment,
+                &EmptyNodeCapabilities::default(),
+                unified_api_version,
+            )
             .expect(&format!("no adapter for network {}", chain.name,));
 
         let firehose_endpoint = match chain.firehose_endpoints.random() {
@@ -146,7 +150,7 @@ impl Blockchain for Chain {
 
     type TriggerFilter = crate::adapter::TriggerFilter;
 
-    type NodeCapabilities = crate::capabilities::NodeCapabilities;
+    type NodeCapabilities = EmptyNodeCapabilities<Chain>;
 
     fn triggers_adapter(
         &self,

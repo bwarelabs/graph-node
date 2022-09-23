@@ -12,8 +12,8 @@ use graph::{
             FirehoseMapper as FirehoseMapperTrait, TriggersAdapter as TriggersAdapterTrait,
         },
         firehose_block_stream::FirehoseBlockStream,
-        Block as _, BlockHash, BlockPtr, Blockchain, BlockchainKind, IngestorError,
-        RuntimeAdapter as RuntimeAdapterTrait,
+        Block as _, BlockHash, BlockPtr, Blockchain, BlockchainKind, EmptyNodeCapabilities,
+        IngestorError, RuntimeAdapter as RuntimeAdapterTrait,
     },
     components::store::DeploymentLocator,
     firehose::{self, FirehoseEndpoint, FirehoseEndpoints, ForkStep},
@@ -21,7 +21,6 @@ use graph::{
 };
 use prost::Message;
 
-use crate::capabilities::NodeCapabilities;
 use crate::data_source::{
     DataSource, DataSourceTemplate, EventOrigin, UnresolvedDataSource, UnresolvedDataSourceTemplate,
 };
@@ -81,7 +80,7 @@ impl Blockchain for Chain {
 
     type TriggerFilter = TriggerFilter;
 
-    type NodeCapabilities = NodeCapabilities;
+    type NodeCapabilities = EmptyNodeCapabilities<Self>;
 
     fn triggers_adapter(
         &self,
@@ -103,7 +102,11 @@ impl Blockchain for Chain {
         unified_api_version: UnifiedMappingApiVersion,
     ) -> Result<Box<dyn BlockStream<Self>>, Error> {
         let adapter = self
-            .triggers_adapter(&deployment, &NodeCapabilities {}, unified_api_version)
+            .triggers_adapter(
+                &deployment,
+                &EmptyNodeCapabilities::default(),
+                unified_api_version,
+            )
             .unwrap_or_else(|_| panic!("no adapter for network {}", self.name));
 
         let firehose_endpoint = match self.firehose_endpoints.random() {
