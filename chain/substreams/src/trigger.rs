@@ -19,10 +19,10 @@ use graph::{
 use graph_runtime_wasm::module::ToAscPtr;
 use lazy_static::__Deref;
 
+use crate::codec::value::Typed;
 use crate::codec::Field;
 use crate::{
-    codec::{entity_change::Operation, field::Type},
-    Block, Chain, NodeCapabilities, NoopDataSourceTemplate,
+    codec::entity_change::Operation, Block, Chain, NodeCapabilities, NoopDataSourceTemplate,
 };
 
 #[derive(Eq, PartialEq, PartialOrd, Ord, Debug)]
@@ -193,10 +193,12 @@ where
                     let key = EntityKey::data(entity_type.to_string(), entity_id.clone());
                     let mut data: HashMap<String, Value> = HashMap::from_iter(vec![]);
                     for field in entity_change.fields.iter() {
-                        let value: Value = decode_entity_change(&field)?;
-                        *data
-                            .entry(field.name.as_str().to_owned())
-                            .or_insert(Value::Null) = value;
+                        if field.new_value.is_some() {
+                            let value: Value = decode_entity_change(&field)?;
+                            *data
+                                .entry(field.name.as_str().to_owned())
+                                .or_insert(Value::Null) = value;
+                        }
                     }
 
                     write_poi_event(
@@ -237,79 +239,77 @@ where
 }
 
 fn decode_entity_change(field: &Field) -> Result<Value, MappingError> {
-    match field.value_type() {
-        Type::Unset => {
-            return Err(MappingError::Unknown(anyhow!(
-                "Invalid field type, the protobuf probably needs updating"
-            )))
-        }
-        Type::Bigdecimal => BigDecimal::from_str(&field.new_value)
+    return match field.new_value.as_ref().unwrap().typed.as_ref().unwrap() {
+        Typed::Int32(new_value) => Ok(Value::Int(new_value.to_owned())),
+        Typed::Bigdecimal(new_value) => BigDecimal::from_str(&new_value)
             .map(|bd| Value::BigDecimal(bd))
             .map_err(|err| MappingError::Unknown(anyhow::Error::from(err))),
-        Type::Bigint => BigInt::from_str(&field.new_value)
-            .map(|bd| Value::BigInt(bd))
+        Typed::Bigint(new_value) => BigInt::from_str(&new_value)
+            .map(|bi| Value::BigInt(bi))
             .map_err(|err| MappingError::Unknown(anyhow::Error::from(err))),
-        Type::Int32 => field
-            .new_value
-            .parse::<i32>()
-            .map(|i| Value::Int(i))
-            .map_err(|err| MappingError::Unknown(anyhow::Error::from(err))),
-        Type::Bytes => base64::decode(&field.new_value)
+        Typed::String(new_value) => Ok(Value::String(new_value.to_owned())),
+        Typed::Bytes(new_value) => base64::decode(&new_value)
             .map(|bs| Value::Bytes(Bytes::from(bs.as_ref())))
             .map_err(|err| MappingError::Unknown(anyhow::Error::from(err))),
-        Type::String => Ok(Value::String(field.new_value.clone())),
-    }
+        Typed::Bool(_) => {
+            Err(MappingError::Unknown(anyhow!("unimplemented"))) // todo
+        }
+        Typed::Array(_) => {
+            Err(MappingError::Unknown(anyhow!("unimplemented"))) // todo
+        }
+    };
 }
 
 #[cfg(test)]
 mod test {
     use std::{ops::Add, str::FromStr};
 
-    use crate::codec::field::Type as FieldType;
+    use crate::codec::value::Typed;
     use crate::codec::Field;
+    use crate::codec::Value;
     use crate::trigger::decode_entity_change;
     use graph::{
         data::store::scalar::Bytes,
-        prelude::{BigDecimal, BigInt, Value},
+        prelude::{BigDecimal, BigInt, Value as GraphValue},
     };
 
     #[test]
     fn validate_substreams_field_types() {
         struct Case {
             field: Field,
-            expected_new_value: Value,
+            expected_new_value: GraphValue,
         }
 
         let cases = vec![
             Case {
                 field: Field {
                     name: "string value".to_string(),
-                    value_type: FieldType::String as i32,
-                    new_value: "d4325ee72c39999e778a9908f5fb0803f78e30c441a5f2ce5c65eee0e0eba59d"
-                        .to_string(),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::String(
+                            "d4325ee72c39999e778a9908f5fb0803f78e30c441a5f2ce5c65eee0e0eba59d"
+                                .to_string(),
+                        )),
+                    }),
+                    old_value: None,
                 },
-                expected_new_value: Value::String(
+                expected_new_value: GraphValue::String(
                     "d4325ee72c39999e778a9908f5fb0803f78e30c441a5f2ce5c65eee0e0eba59d".to_string(),
                 ),
             },
             Case {
                 field: Field {
                     name: "bytes value".to_string(),
-                    value_type: FieldType::Bytes as i32,
-                    new_value: base64::encode(
-                        hex::decode(
-                            "445247fe150195bd866516594e087e1728294aa831613f4d48b8ec618908519f",
-                        )
-                        .unwrap(),
-                    ),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::Bytes(base64::encode(
+                            hex::decode(
+                                "445247fe150195bd866516594e087e1728294aa831613f4d48b8ec618908519f",
+                            )
+                                .unwrap(),
+                        ).into_bytes()))
+                    }),
+                    old_value: None,
                 },
-                expected_new_value: Value::Bytes(
+                expected_new_value: GraphValue::Bytes(
                     Bytes::from_str(
                         "0x445247fe150195bd866516594e087e1728294aa831613f4d48b8ec618908519f",
                     )
@@ -319,57 +319,52 @@ mod test {
             Case {
                 field: Field {
                     name: "int value for block".to_string(),
-                    value_type: FieldType::Int32 as i32,
-                    new_value: "12369760".to_string(),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::Int32(12369760))
+                    }),
+                    old_value: None
                 },
-                expected_new_value: Value::Int(12369760),
+                expected_new_value: GraphValue::Int(12369760),
             },
             Case {
                 field: Field {
                     name: "negative int value".to_string(),
-                    value_type: FieldType::Int32 as i32,
-                    new_value: "-12369760".to_string(),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::Int32(-12369760))
+                    }),
+                    old_value: None,
                 },
-                expected_new_value: Value::Int(-12369760),
+                expected_new_value: GraphValue::Int(-12369760),
             },
             Case {
                 field: Field {
                     name: "big int".to_string(),
-                    value_type: FieldType::Bigint as i32,
-                    new_value: "123".to_string(),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::Bigint("123".to_string()))
+                    }),
+                    old_value: None,
                 },
-                expected_new_value: Value::BigInt(BigInt::from(123u64)),
+                expected_new_value: GraphValue::BigInt(BigInt::from(123u64)),
             },
             Case {
                 field: Field {
                     name: "big int > u64".to_string(),
-                    value_type: FieldType::Bigint as i32,
-                    new_value: BigInt::from(u64::MAX).add(BigInt::from(1)).to_string(),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::Bigint(BigInt::from(u64::MAX).add(BigInt::from(1)).to_string()))
+                    }),
+                    old_value: None,
                 },
-                expected_new_value: Value::BigInt(BigInt::from(u64::MAX).add(BigInt::from(1))),
+                expected_new_value: GraphValue::BigInt(BigInt::from(u64::MAX).add(BigInt::from(1))),
             },
             Case {
                 field: Field {
                     name: "big decimal value".to_string(),
-                    value_type: FieldType::Bigdecimal as i32,
-                    new_value: "3133363633312e35".to_string(),
-                    new_value_null: false,
-                    old_value: String::new(),
-                    old_value_null: true,
+                    new_value: Some(Value {
+                        typed: Some(Typed::Bigdecimal("3133363633312e35".to_string()))
+                    }),
+                    old_value: None,
                 },
-                expected_new_value: Value::BigDecimal(BigDecimal::new(
+                expected_new_value: GraphValue::BigDecimal(BigDecimal::new(
                     BigInt::from(3133363633312u64),
                     35,
                 )),
@@ -377,7 +372,7 @@ mod test {
         ];
 
         for case in cases.into_iter() {
-            let value: Value = decode_entity_change(&case.field).unwrap();
+            let value: GraphValue = decode_entity_change(&case.field).unwrap();
             assert_eq!(
                 case.expected_new_value, value,
                 "failed case: {}",

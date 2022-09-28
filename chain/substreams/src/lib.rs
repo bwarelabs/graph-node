@@ -12,5 +12,4 @@ pub use codec::EntityChanges;
 pub use data_source::*;
 pub use trigger::*;
 
-pub use codec::field::Type as FieldType;
 pub use codec::Field;
