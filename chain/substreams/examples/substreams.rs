@@ -1,5 +1,5 @@
 use anyhow::{format_err, Context, Error};
-use graph::blockchain::block_stream::BlockStreamEvent;
+use graph::blockchain::block_stream::{BlockStreamEvent, SubstreamsMapper};
 use graph::blockchain::substreams_block_stream::SubstreamsBlockStream;
 use graph::prelude::{info, tokio, DeploymentHash, Registry};
 use graph::tokio_stream::StreamExt;
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Error> {
 
     let endpoint = env_var(
         "SUBSTREAMS_ENDPOINT",
-        "https://api-dev.streamingfast.io".to_string(),
+        "https://api.streamingfast.io".to_string(),
     );
 
     let package_file = env_var("SUBSTREAMS_PACKAGE", "".to_string());
@@ -74,17 +74,9 @@ async fn main() -> Result<(), Error> {
                 Ok(block_stream_event) => match block_stream_event {
                     BlockStreamEvent::Revert(_, _) => {}
                     BlockStreamEvent::ProcessBlock(block_with_trigger, _) => {
-                        let changes = block_with_trigger.block;
-                        for change in changes.changes.entity_changes {
-                            info!(&logger, "----- Entity -----");
-                            info!(
-                                &logger,
-                                "name: {} operation: {}", change.entity, change.operation
-                            );
+                        for change in block_with_trigger.block.changes.entity_changes {
                             for field in change.fields {
-                                info!(&logger, "field: {}, type: {}", field.name, field.value_type);
-                                info!(&logger, "new value: {}", hex::encode(field.new_value));
-                                info!(&logger, "old value: {}", hex::encode(field.old_value));
+                                info!(&logger, "field: {:?}", field);
                             }
                         }
                     }
