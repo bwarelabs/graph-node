@@ -1,5 +1,5 @@
 use anyhow::{format_err, Context, Error};
-use graph::blockchain::block_stream::{BlockStreamEvent, SubstreamsMapper};
+use graph::blockchain::block_stream::BlockStreamEvent;
 use graph::blockchain::substreams_block_stream::SubstreamsBlockStream;
 use graph::prelude::{info, tokio, DeploymentHash, Registry};
 use graph::tokio_stream::StreamExt;
