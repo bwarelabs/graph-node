@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use config::PoolSize;
 use git_testament::{git_testament, render_testament};
+use graph::anyhow::bail;
 use graph::{data::graphql::effort::LoadManager, prelude::chrono, prometheus::Registry};
 use graph::{
     log::logger,
@@ -231,6 +232,25 @@ pub enum Command {
         /// How much history to keep in blocks
         #[clap(long, short, default_value = "10000")]
         history: usize,
+    },
+    /// Delete a deployment and all it's indexed data
+    ///
+    /// The deployment can be specified as either a subgraph name, an IPFS
+    /// hash `Qm..`, or the database namespace `sgdNNN`. Since the same IPFS
+    /// hash can be deployed in multiple shards, it is possible to specify
+    /// the shard by adding `:shard` to the IPFS hash.
+    Drop {
+        /// The deployment identifier
+        deployment: DeploymentSearch,
+        /// List only current version
+        #[clap(long, short)]
+        current: bool,
+        /// List only pending versions
+        #[clap(long, short)]
+        pending: bool,
+        /// List only used (current and pending) versions
+        #[clap(long, short)]
+        used: bool,
     },
 }
 
@@ -830,7 +850,7 @@ async fn main() -> anyhow::Result<()> {
                 } => {
                     let count = count.unwrap_or(1_000_000);
                     let older = older.map(|older| chrono::Duration::minutes(older as i64));
-                    commands::unused_deployments::remove(store, count, deployment, older)
+                    commands::unused_deployments::remove(store, count, deployment.as_deref(), older)
                 }
             }
         }
@@ -1064,6 +1084,62 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let (store, primary_pool) = ctx.store_and_primary();
             commands::prune::run(store, primary_pool, deployment, history, prune_ratio).await
+        }
+        Drop {
+            deployment,
+            current,
+            pending,
+            used,
+        } => {
+            let sender = ctx.notification_sender();
+            let (store, mut pools) = ctx.store_and_pools();
+            let subgraph_store = store.subgraph_store();
+            let primary_pool = pools
+                .remove(&*PRIMARY_SHARD)
+                .expect("there is a primary pool");
+
+            // graphman info -> find subgraph
+            let subgraph_names = commands::info::find(
+                primary_pool.clone(),
+                deployment.clone(),
+                current,
+                pending,
+                used,
+            )?;
+            if subgraph_names.is_empty() {
+                bail!("Found no deployment for identifier: {deployment}")
+            } else {
+                println!("Found {} subgraph(s) to remove:", subgraph_names.len());
+                for (idx, deployment) in subgraph_names.iter().enumerate() {
+                    println!(
+                        "  {}: name={}, deployment={}",
+                        idx + 1,
+                        deployment.name,
+                        deployment.deployment
+                    )
+                }
+            }
+            // graphman unassign -> so it stops syncing if active
+            commands::assign::unassign(primary_pool, &sender, &deployment).await?;
+
+            // graphman remove -> to unregister the subgraph's name
+            for deployment in &subgraph_names {
+                commands::remove::run(subgraph_store.clone(), &deployment.name)?;
+            }
+
+            // graphman unused record ->  to register the deployment as unused
+            commands::unused_deployments::record(subgraph_store.clone())?;
+
+            // graphman unused remove -> to remove the deployment's data
+            for deployment in &subgraph_names {
+                commands::unused_deployments::remove(
+                    subgraph_store.clone(),
+                    1_000_000,
+                    Some(&deployment.name),
+                    None,
+                )?;
+            }
+            Ok(())
         }
     }
 }
