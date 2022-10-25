@@ -6,6 +6,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use super::block_stream::{
     BlockStream, BlockStreamEvent, BlockWithTriggers, ChainHeadUpdateStream, FirehoseCursor,
@@ -15,6 +17,7 @@ use super::{Block, BlockPtr, Blockchain};
 
 use crate::components::store::BlockNumber;
 use crate::data::subgraph::UnifiedMappingApiVersion;
+use crate::env::env_var;
 use crate::prelude::*;
 
 // A high number here forces a slow start.
@@ -74,11 +77,21 @@ where
     Done,
 }
 
+struct PendingBlocks<C>
+where
+    C: Blockchain,
+{
+    blocks: Vec<JoinHandle<Result<Vec<BlockWithTriggers<C>>, Error>>>,
+    from: BlockNumber,
+    to: BlockNumber,
+}
+
 struct PollingBlockStreamContext<C>
 where
     C: Blockchain,
 {
     chain_store: Arc<dyn ChainStore>,
+    pending_blocks: Arc<Mutex<PendingBlocks<C>>>,
     adapter: Arc<dyn TriggersAdapter<C>>,
     node_id: NodeId,
     subgraph_id: DeploymentHash,
@@ -102,6 +115,7 @@ impl<C: Blockchain> Clone for PollingBlockStreamContext<C> {
     fn clone(&self) -> Self {
         Self {
             chain_store: self.chain_store.cheap_clone(),
+            pending_blocks: self.pending_blocks.cheap_clone(),
             adapter: self.adapter.clone(),
             node_id: self.node_id.clone(),
             subgraph_id: self.subgraph_id.clone(),
@@ -164,6 +178,11 @@ where
             chain_head_update_stream,
             ctx: PollingBlockStreamContext {
                 current_block: start_block,
+                pending_blocks: Arc::new(Mutex::new(PendingBlocks {
+                    blocks: Vec::new(),
+                    from: 0,
+                    to: 0,
+                })),
                 chain_store,
                 adapter,
                 node_id,
@@ -209,6 +228,27 @@ where
                 }
             }
         }
+    }
+
+    async fn scan_triggers_parallel(
+        &self,
+        from: BlockNumber,
+        to: BlockNumber,
+    ) -> Result<Vec<BlockWithTriggers<C>>, Error> {
+        let step_size = cmp::max(env_var("GRAPH_SCAN_LOGS_RANGE_SIZE", 500), 1);
+        futures03::stream::iter((from..(to + 1)).step_by(step_size).map(move |start_block| {
+            // inclusive start and end blocks
+            self.adapter.scan_triggers(
+                start_block,
+                cmp::min(start_block + step_size as i32 - 1, to),
+                &self.filter,
+            )
+        }))
+        // maximum number of parallel block-intervals queried at once.
+        .buffered(env_var("GRAPH_SCAN_LOGS_MAX_CONCURRENT_RPC", 10))
+        .try_concat()
+        .boxed()
+        .await
     }
 
     /// Determine the next reconciliation step. Does not modify Store or ChainStore.
@@ -378,7 +418,35 @@ where
                 "range_size" => range_size
             );
 
-            let blocks = self.adapter.scan_triggers(from, to, &self.filter).await?;
+            let mut pending_blocks = self.pending_blocks.lock().await;
+            let blocks = if pending_blocks.blocks.is_empty() {
+                self.scan_triggers_parallel(from, to).await?
+            } else {
+                let mut blocks = pending_blocks.blocks.pop().unwrap().await??;
+                if pending_blocks.to < to {
+                    blocks.append(
+                        &mut self
+                            .scan_triggers_parallel(pending_blocks.to + 1, to)
+                            .await?,
+                    );
+                } else if pending_blocks.to > to {
+                    blocks = blocks
+                        .into_iter()
+                        .filter(|blk| blk.block.number() <= to)
+                        .collect();
+                }
+                blocks
+            };
+            let self_cloned = self.clone();
+            pending_blocks.blocks.push(tokio::task::spawn({
+                async move {
+                    self_cloned
+                        .scan_triggers_parallel(to + 1, cmp::min(to + range_size, to_limit))
+                        .await
+                }
+            }));
+            pending_blocks.from = to + 1;
+            pending_blocks.to = cmp::min(to + range_size, to_limit);
 
             Ok(ReconciliationStep::ProcessDescendantBlocks(
                 blocks, range_size,
